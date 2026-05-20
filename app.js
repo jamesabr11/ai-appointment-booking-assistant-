@@ -266,6 +266,3 @@ app.delete("/api/appointments/:id", requireAuth, (req, res) => {
 app.listen(port, () => {
   console.log(`Server running at http://localhost:${port}`);
 });
-
-//testing ci
-// testeing again
