@@ -1,9 +1,9 @@
-"use client"
+"use client";
 
-import { useEffect, useState } from 'react'
-import { useRouter } from 'next/navigation'
-import { motion, AnimatePresence } from 'framer-motion'
-import useSWR, { mutate } from 'swr'
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { motion, AnimatePresence } from "framer-motion";
+import useSWR, { mutate } from "swr";
 import {
   ChevronLeft,
   ChevronRight,
@@ -13,10 +13,10 @@ import {
   FileText,
   Bot,
   Globe,
-} from 'lucide-react'
-import { AdminSidebar } from '@/components/admin/admin-sidebar'
-import { useAuth } from '@/lib/auth-context'
-import { Button } from '@/components/ui/button'
+} from "lucide-react";
+import { AdminSidebar } from "@/components/admin/admin-sidebar";
+import { useAuth } from "@/lib/auth-context";
+import { Button } from "@/components/ui/button";
 import {
   format,
   startOfMonth,
@@ -26,76 +26,119 @@ import {
   addMonths,
   subMonths,
   isToday,
-} from 'date-fns'
+} from "date-fns";
 
 interface Appointment {
-  id: number
-  customer_name: string
-  customer_phone: string
-  service: string
-  barber: string
-  date: string
-  time: string
-  status: string
-  notes: string | null
-  source: string
-  created_at: string
+  id: number;
+  customer_name: string;
+  customer_phone: string;
+  service: string;
+  barber: string;
+  date: string;
+  time: string;
+  status: string;
+  notes: string | null;
+  source: string;
+  created_at: string;
 }
 
-const fetcher = (url: string) => fetch(url).then(res => res.json())
+const fetcher = (url: string) => fetch(url).then((res) => res.json());
+
+function normalizeSource(source: string) {
+  const value = String(source || "").toLowerCase();
+
+  if (value.includes("ai") || value.includes("voice")) {
+    return "AI Assistant";
+  }
+
+  if (value.includes("admin")) {
+    return "Admin Dashboard";
+  }
+
+  return "Website";
+}
+
+function normalizeStatus(status: string) {
+  const value = String(status || "pending")
+    .trim()
+    .toLowerCase();
+  return value || "pending";
+}
 
 export default function AdminCalendarPage() {
-  const router = useRouter()
-  const { isAuthenticated } = useAuth()
-  const [currentMonth, setCurrentMonth] = useState(new Date())
-  const [selectedDate, setSelectedDate] = useState<Date | null>(null)
-  const [selectedBooking, setSelectedBooking] = useState<Appointment | null>(null)
+  const router = useRouter();
+  const { isAuthenticated } = useAuth();
+  const [mounted, setMounted] = useState(false);
+  const [currentMonth, setCurrentMonth] = useState<Date | null>(null);
+  const [selectedDate, setSelectedDate] = useState<Date | null>(null);
+  const [selectedBooking, setSelectedBooking] = useState<Appointment | null>(
+    null,
+  );
 
-  const { data: appointments = [], isLoading } = useSWR<Appointment[]>('/api/appointments', fetcher, {
-    refreshInterval: 5000,
-  })
+  const { data: appointments = [] } = useSWR<Appointment[]>(
+    "/api/appointments",
+    fetcher,
+    {
+      refreshInterval: 5000,
+    },
+  );
 
   useEffect(() => {
-    if (!isAuthenticated) {
-      router.push('/admin')
-    }
-  }, [isAuthenticated, router])
+    setMounted(true);
+    const now = new Date();
+    setCurrentMonth(now);
+    setSelectedDate(now);
+  }, []);
 
-  if (!isAuthenticated) {
-    return null
+  useEffect(() => {
+    if (mounted && !isAuthenticated) {
+      router.push("/admin");
+    }
+  }, [mounted, isAuthenticated, router]);
+
+  if (!mounted || !isAuthenticated || !currentMonth) {
+    return null;
   }
 
-  const monthStart = startOfMonth(currentMonth)
-  const monthEnd = endOfMonth(currentMonth)
-  const days = eachDayOfInterval({ start: monthStart, end: monthEnd })
+  const monthStart = startOfMonth(currentMonth);
+  const monthEnd = endOfMonth(currentMonth);
+  const days = eachDayOfInterval({ start: monthStart, end: monthEnd });
 
-  const startDay = monthStart.getDay()
-  const paddingDays = Array(startDay).fill(null)
+  const startDay = monthStart.getDay();
+  const paddingDays = Array(startDay).fill(null);
 
   const getBookingsForDay = (date: Date) => {
-    const dateStr = format(date, 'yyyy-MM-dd')
-    return appointments.filter(a => a.date === dateStr)
-  }
+    const dateStr = format(date, "yyyy-MM-dd");
+    return appointments.filter((a) => a.date === dateStr);
+  };
 
   const selectedDateBookings = selectedDate
     ? getBookingsForDay(selectedDate)
-    : []
+    : [];
 
   const handleStatusUpdate = async (id: number, status: string) => {
     try {
       await fetch(`/api/appointments/${id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status }),
-      })
-      mutate('/api/appointments')
+      });
+
+      mutate("/api/appointments");
+      mutate("/api/customers");
+      mutate("/api/activity?limit=8");
+      mutate("/api/appointments?stats=true");
+
       if (selectedBooking && selectedBooking.id === id) {
-        setSelectedBooking({ ...selectedBooking, status })
+        setSelectedBooking({
+          ...selectedBooking,
+          status,
+        });
       }
     } catch (error) {
-      console.error('Failed to update status:', error)
+      console.error("Failed to update status:", error);
     }
-  }
+  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -107,10 +150,13 @@ export default function AdminCalendarPage() {
             <div className="flex items-center justify-between">
               <div className="pl-12 lg:pl-0">
                 <h1 className="text-2xl font-bold">Calendar</h1>
-                <p className="text-sm text-muted-foreground">View and manage appointments</p>
+                <p className="text-sm text-muted-foreground">
+                  View and manage appointments
+                </p>
               </div>
               <div className="text-sm text-muted-foreground">
-                {appointments.length} total booking{appointments.length !== 1 ? 's' : ''}
+                {appointments.length} total booking
+                {appointments.length !== 1 ? "s" : ""}
               </div>
             </div>
           </div>
@@ -125,7 +171,7 @@ export default function AdminCalendarPage() {
             >
               <div className="flex items-center justify-between mb-6">
                 <h2 className="text-xl font-semibold">
-                  {format(currentMonth, 'MMMM yyyy')}
+                  {format(currentMonth, "MMMM yyyy")}
                 </h2>
                 <div className="flex items-center gap-2">
                   <Button
@@ -138,7 +184,11 @@ export default function AdminCalendarPage() {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => setCurrentMonth(new Date())}
+                    onClick={() => {
+                      const now = new Date();
+                      setCurrentMonth(now);
+                      setSelectedDate(now);
+                    }}
                   >
                     Today
                   </Button>
@@ -153,14 +203,16 @@ export default function AdminCalendarPage() {
               </div>
 
               <div className="grid grid-cols-7 gap-2 mb-2">
-                {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => (
-                  <div
-                    key={day}
-                    className="text-center text-sm font-medium text-muted-foreground py-2"
-                  >
-                    {day}
-                  </div>
-                ))}
+                {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map(
+                  (day) => (
+                    <div
+                      key={day}
+                      className="text-center text-sm font-medium text-muted-foreground py-2"
+                    >
+                      {day}
+                    </div>
+                  ),
+                )}
               </div>
 
               <div className="grid grid-cols-7 gap-2">
@@ -169,36 +221,37 @@ export default function AdminCalendarPage() {
                 ))}
 
                 {days.map((day) => {
-                  const dayBookings = getBookingsForDay(day)
-                  const isSelected = selectedDate && isSameDay(day, selectedDate)
-                  const isCurrentDay = isToday(day)
+                  const dayBookings = getBookingsForDay(day);
+                  const isSelected =
+                    selectedDate && isSameDay(day, selectedDate);
+                  const isCurrentDay = isToday(day);
 
                   return (
                     <motion.button
-                      key={day.toISOString()}
+                      key={format(day, "yyyy-MM-dd")}
                       whileHover={{ scale: 1.05 }}
                       whileTap={{ scale: 0.95 }}
                       onClick={() => setSelectedDate(day)}
                       className={`aspect-square rounded-xl p-2 flex flex-col items-center justify-start transition-all relative ${
                         isSelected
-                          ? 'bg-primary/20 border-2 border-primary'
+                          ? "bg-primary/20 border-2 border-primary"
                           : isCurrentDay
-                          ? 'bg-accent/10 border border-accent/30'
-                          : 'hover:bg-secondary/50 border border-transparent'
+                            ? "bg-accent/10 border border-accent/30"
+                            : "hover:bg-secondary/50 border border-transparent"
                       }`}
                     >
                       <span
                         className={`text-sm font-medium ${
                           isSelected
-                            ? 'text-primary'
+                            ? "text-primary"
                             : isCurrentDay
-                            ? 'text-accent'
-                            : ''
+                              ? "text-accent"
+                              : ""
                         }`}
                       >
-                        {format(day, 'd')}
+                        {format(day, "d")}
                       </span>
-                      
+
                       {dayBookings.length > 0 && (
                         <div className="flex gap-0.5 mt-1 flex-wrap justify-center">
                           {dayBookings.slice(0, 3).map((_, i) => (
@@ -215,7 +268,7 @@ export default function AdminCalendarPage() {
                         </div>
                       )}
                     </motion.button>
-                  )
+                  );
                 })}
               </div>
             </motion.div>
@@ -230,58 +283,71 @@ export default function AdminCalendarPage() {
                   <div className="flex items-center justify-between mb-6">
                     <div>
                       <h3 className="text-lg font-semibold">
-                        {format(selectedDate, 'EEEE')}
+                        {format(selectedDate, "EEEE")}
                       </h3>
                       <p className="text-sm text-muted-foreground">
-                        {format(selectedDate, 'MMMM d, yyyy')}
+                        {format(selectedDate, "MMMM d, yyyy")}
                       </p>
                     </div>
                     <div className="px-3 py-1 rounded-full bg-primary/10 text-primary text-sm font-medium">
-                      {selectedDateBookings.length} booking{selectedDateBookings.length !== 1 ? 's' : ''}
+                      {selectedDateBookings.length} booking
+                      {selectedDateBookings.length !== 1 ? "s" : ""}
                     </div>
                   </div>
 
                   {selectedDateBookings.length > 0 ? (
                     <div className="space-y-3">
-                      {selectedDateBookings.map((booking) => (
-                        <motion.div
-                          key={booking.id}
-                          initial={{ opacity: 0, y: 10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          className="p-4 rounded-xl bg-secondary/30 hover:bg-secondary/50 transition-colors cursor-pointer"
-                          onClick={() => setSelectedBooking(booking)}
-                        >
-                          <div className="flex items-center justify-between mb-2">
-                            <span className="font-medium">{booking.customer_name}</span>
-                            <span className={`text-xs px-2 py-0.5 rounded-full ${
-                              booking.status === 'confirmed'
-                                ? 'bg-emerald-500/20 text-emerald-500'
-                                : booking.status === 'pending'
-                                ? 'bg-amber-500/20 text-amber-500'
-                                : booking.status === 'completed'
-                                ? 'bg-primary/20 text-primary'
-                                : 'bg-red-500/20 text-red-500'
-                            }`}>
-                              {booking.status}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                            <span className="flex items-center gap-1">
-                              <Clock className="h-4 w-4" />
-                              {booking.time}
-                            </span>
-                            <span>{booking.service}</span>
-                          </div>
-                          <div className="flex items-center gap-1 mt-2 text-xs text-muted-foreground">
-                            {booking.source === 'ai' ? (
-                              <Bot className="h-3 w-3 text-primary" />
-                            ) : (
-                              <Globe className="h-3 w-3 text-primary" />
-                            )}
-                            {booking.source === 'ai' ? 'AI Assistant' : 'Website'}
-                          </div>
-                        </motion.div>
-                      ))}
+                      {selectedDateBookings.map((booking) => {
+                        const status = normalizeStatus(booking.status);
+                        const source = normalizeSource(booking.source);
+
+                        return (
+                          <motion.div
+                            key={booking.id}
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className="p-4 rounded-xl bg-secondary/30 hover:bg-secondary/50 transition-colors cursor-pointer"
+                            onClick={() =>
+                              setSelectedBooking({ ...booking, status })
+                            }
+                          >
+                            <div className="flex items-center justify-between mb-2">
+                              <span className="font-medium">
+                                {booking.customer_name}
+                              </span>
+                              <span
+                                className={`text-xs px-2 py-0.5 rounded-full ${
+                                  status === "confirmed"
+                                    ? "bg-emerald-500/20 text-emerald-500"
+                                    : status === "pending"
+                                      ? "bg-amber-500/20 text-amber-500"
+                                      : status === "completed"
+                                        ? "bg-primary/20 text-primary"
+                                        : "bg-red-500/20 text-red-500"
+                                }`}
+                              >
+                                {status.charAt(0).toUpperCase() +
+                                  status.slice(1)}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                              <span className="flex items-center gap-1">
+                                <Clock className="h-4 w-4" />
+                                {booking.time || "No time"}
+                              </span>
+                              <span>{booking.service || "No service"}</span>
+                            </div>
+                            <div className="flex items-center gap-1 mt-2 text-xs text-muted-foreground">
+                              {source === "AI Assistant" ? (
+                                <Bot className="h-3 w-3 text-primary" />
+                              ) : (
+                                <Globe className="h-3 w-3 text-primary" />
+                              )}
+                              {source}
+                            </div>
+                          </motion.div>
+                        );
+                      })}
                     </div>
                   ) : (
                     <div className="text-center py-12 text-muted-foreground">
@@ -331,20 +397,29 @@ export default function AdminCalendarPage() {
               <div className="space-y-4">
                 <div className="flex items-center gap-4">
                   <div className="w-14 h-14 rounded-full bg-primary/20 flex items-center justify-center text-xl font-bold text-primary">
-                    {selectedBooking.customer_name[0]}
+                    {selectedBooking.customer_name?.[0] || "?"}
                   </div>
                   <div>
-                    <div className="font-semibold text-lg">{selectedBooking.customer_name}</div>
-                    <div className={`text-xs px-2 py-0.5 rounded-full inline-flex ${
-                      selectedBooking.status === 'confirmed'
-                        ? 'bg-emerald-500/20 text-emerald-500'
-                        : selectedBooking.status === 'pending'
-                        ? 'bg-amber-500/20 text-amber-500'
-                        : selectedBooking.status === 'completed'
-                        ? 'bg-primary/20 text-primary'
-                        : 'bg-red-500/20 text-red-500'
-                    }`}>
-                      {selectedBooking.status}
+                    <div className="font-semibold text-lg">
+                      {selectedBooking.customer_name}
+                    </div>
+                    <div
+                      className={`text-xs px-2 py-0.5 rounded-full inline-flex ${
+                        normalizeStatus(selectedBooking.status) === "confirmed"
+                          ? "bg-emerald-500/20 text-emerald-500"
+                          : normalizeStatus(selectedBooking.status) ===
+                              "pending"
+                            ? "bg-amber-500/20 text-amber-500"
+                            : normalizeStatus(selectedBooking.status) ===
+                                "completed"
+                              ? "bg-primary/20 text-primary"
+                              : "bg-red-500/20 text-red-500"
+                      }`}
+                    >
+                      {normalizeStatus(selectedBooking.status)
+                        .charAt(0)
+                        .toUpperCase() +
+                        normalizeStatus(selectedBooking.status).slice(1)}
                     </div>
                   </div>
                 </div>
@@ -355,25 +430,32 @@ export default function AdminCalendarPage() {
                       <Phone className="h-4 w-4" />
                       Phone
                     </div>
-                    <div className="font-medium">{selectedBooking.customer_phone}</div>
+                    <div className="font-medium">
+                      {selectedBooking.customer_phone}
+                    </div>
                   </div>
                   <div className="p-3 rounded-xl bg-secondary/30">
                     <div className="flex items-center gap-2 text-muted-foreground text-sm mb-1">
                       <Clock className="h-4 w-4" />
                       Time
                     </div>
-                    <div className="font-medium">{selectedBooking.time}</div>
+                    <div className="font-medium">
+                      {selectedBooking.time || "No time"}
+                    </div>
                   </div>
                   <div className="p-3 rounded-xl bg-secondary/30">
                     <div className="flex items-center gap-2 text-muted-foreground text-sm mb-1">
                       <FileText className="h-4 w-4" />
                       Service
                     </div>
-                    <div className="font-medium">{selectedBooking.service}</div>
+                    <div className="font-medium">
+                      {selectedBooking.service || "No service"}
+                    </div>
                   </div>
                   <div className="p-3 rounded-xl bg-secondary/30">
                     <div className="flex items-center gap-2 text-muted-foreground text-sm mb-1">
-                      {selectedBooking.source === 'ai' ? (
+                      {normalizeSource(selectedBooking.source) ===
+                      "AI Assistant" ? (
                         <Bot className="h-4 w-4" />
                       ) : (
                         <Globe className="h-4 w-4" />
@@ -381,7 +463,7 @@ export default function AdminCalendarPage() {
                       Source
                     </div>
                     <div className="font-medium text-sm">
-                      {selectedBooking.source === 'ai' ? 'AI Assistant' : 'Website'}
+                      {normalizeSource(selectedBooking.source)}
                     </div>
                   </div>
                 </div>
@@ -400,24 +482,36 @@ export default function AdminCalendarPage() {
                   <Button
                     variant="outline"
                     className="flex-1"
-                    onClick={() => handleStatusUpdate(selectedBooking.id, 'confirmed')}
-                    disabled={selectedBooking.status === 'confirmed'}
+                    onClick={() =>
+                      handleStatusUpdate(selectedBooking.id, "confirmed")
+                    }
+                    disabled={
+                      normalizeStatus(selectedBooking.status) === "confirmed"
+                    }
                   >
                     Confirm
                   </Button>
                   <Button
                     variant="outline"
                     className="flex-1"
-                    onClick={() => handleStatusUpdate(selectedBooking.id, 'completed')}
-                    disabled={selectedBooking.status === 'completed'}
+                    onClick={() =>
+                      handleStatusUpdate(selectedBooking.id, "completed")
+                    }
+                    disabled={
+                      normalizeStatus(selectedBooking.status) === "completed"
+                    }
                   >
                     Complete
                   </Button>
                   <Button
                     variant="outline"
                     className="flex-1 text-red-500 hover:bg-red-500/10"
-                    onClick={() => handleStatusUpdate(selectedBooking.id, 'cancelled')}
-                    disabled={selectedBooking.status === 'cancelled'}
+                    onClick={() =>
+                      handleStatusUpdate(selectedBooking.id, "cancelled")
+                    }
+                    disabled={
+                      normalizeStatus(selectedBooking.status) === "cancelled"
+                    }
                   >
                     Cancel
                   </Button>
@@ -428,5 +522,5 @@ export default function AdminCalendarPage() {
         )}
       </AnimatePresence>
     </div>
-  )
+  );
 }

@@ -97,3 +97,16 @@ call_logs/
 ```
 
 Keep OpenAI, Twilio, and other API keys outside this repository.
+
+## Latest admin CRUD and booking updates
+
+The admin Bookings page now supports full booking management:
+
+- Add a booking from the admin dashboard.
+- Edit a single booking's name, phone, email, service, barber, date, time, notes, status, and source.
+- Delete one booking without clearing the full database.
+- Confirm, complete, or cancel a booking.
+
+The public booking form uses a calendar picker. Weekends are disabled/red, and customers can only select weekdays from today through the next 14 days. The API validates the same rule on the server so users cannot bypass the frontend calendar.
+
+Website-created bookings are saved with the source `Website Form`. Admin-created bookings are saved with the source `Admin Dashboard`. AI/phone bookings still show as AI voice assistant bookings.

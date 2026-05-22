@@ -2,15 +2,22 @@ import Database from "better-sqlite3";
 import fs from "fs";
 import path from "path";
 
-const DB_PATH = path.join(
-  process.cwd(),
-  "..",
-  "speech-assistant-openai-realtime-api-python",
-  "call_logs",
-  "appointments.db",
-);
+const dbPath =
+  process.env.APPOINTMENTS_DB_PATH ||
+  path.join(
+    process.cwd(),
+    "..",
+    "..",
+    "speech-assistant-openai-realtime-api-python",
+    "call_logs",
+    "appointments.db",
+  );
 
-const INTERNAL_TABLES = ["appointment_statuses", "appointment_activity"];
+const INTERNAL_TABLES = [
+  "appointment_statuses",
+  "appointment_sources",
+  "appointment_activity",
+];
 const APPOINTMENT_TABLE_HINTS = [
   "appointments",
   "appointment",
@@ -82,6 +89,9 @@ export interface Customer {
   email?: string | null;
   total_visits?: number;
   last_visit?: string;
+  last_visit_time?: string;
+  preferred_service?: string;
+  source?: string;
   created_at?: string;
 }
 
@@ -108,7 +118,7 @@ type TableInfo = {
 };
 
 function fileExists() {
-  return fs.existsSync(DB_PATH);
+  return fs.existsSync(dbPath);
 }
 
 function getDb(fileMustExist = true) {
@@ -116,7 +126,7 @@ function getDb(fileMustExist = true) {
     return null;
   }
 
-  const db = new Database(DB_PATH, { fileMustExist });
+  const db = new Database(dbPath, { fileMustExist });
   db.pragma("journal_mode = WAL");
   return db;
 }
@@ -225,6 +235,46 @@ function ensureStatusTable(db: Database.Database) {
   `);
 }
 
+function ensureSourceTable(db: Database.Database) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS appointment_sources (
+      source_table TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'AI Voice Assistant',
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (source_table, source_id)
+    )
+  `);
+}
+
+function getSourceOverrides(db: Database.Database, tableName: string) {
+  ensureSourceTable(db);
+  const rows = db
+    .prepare(
+      "SELECT source_id, source FROM appointment_sources WHERE source_table = ?",
+    )
+    .all(tableName) as { source_id: string; source: string }[];
+
+  return new Map(rows.map((row) => [row.source_id, row.source]));
+}
+
+function saveSourceOverride(
+  db: Database.Database,
+  tableName: string,
+  id: number | string,
+  source: string,
+) {
+  ensureSourceTable(db);
+  db.prepare(
+    `
+    INSERT INTO appointment_sources (source_table, source_id, source, updated_at)
+    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(source_table, source_id)
+    DO UPDATE SET source = excluded.source, updated_at = CURRENT_TIMESTAMP
+  `,
+  ).run(tableName, String(id), source || "AI Voice Assistant");
+}
+
 function ensureActivityTable(db: Database.Database) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS appointment_activity (
@@ -281,6 +331,7 @@ function normalizeAppointment(
   row: Record<string, unknown>,
   columns: string[],
   statusOverride?: string,
+  sourceOverride?: string,
 ): Appointment {
   const id = getRowId(row, columns);
   const date = getValue(row, columns, FIELD_CANDIDATES.date);
@@ -308,15 +359,13 @@ function normalizeAppointment(
     day: day || undefined,
     time: getValue(row, columns, FIELD_CANDIDATES.time, "Time not set"),
     notes: getValue(row, columns, FIELD_CANDIDATES.notes) || null,
-    status:
+    status: normalizeStatusValue(
       statusOverride ||
-      getValue(row, columns, FIELD_CANDIDATES.status, "pending"),
-    source: getValue(
-      row,
-      columns,
-      FIELD_CANDIDATES.source,
-      "AI Voice Assistant",
+        getValue(row, columns, FIELD_CANDIDATES.status, "pending"),
     ),
+    source:
+      sourceOverride ||
+      getValue(row, columns, FIELD_CANDIDATES.source, "AI Voice Assistant"),
     created_at: getValue(row, columns, FIELD_CANDIDATES.created_at),
     updated_at: getValue(row, columns, FIELD_CANDIDATES.updated_at),
   };
@@ -354,12 +403,20 @@ function readAppointments(
       .all(...params) as Record<string, unknown>[];
 
     const statusOverrides = getStatusOverrides(db, table.name);
+    const sourceOverrides = getSourceOverrides(db, table.name);
 
     return rows.map((row) => {
       const id = getRowId(row, table.columns);
-      const override =
+      const statusOverride =
         id !== undefined ? statusOverrides.get(String(id)) : undefined;
-      return normalizeAppointment(row, table.columns, override);
+      const sourceOverride =
+        id !== undefined ? sourceOverrides.get(String(id)) : undefined;
+      return normalizeAppointment(
+        row,
+        table.columns,
+        statusOverride,
+        sourceOverride,
+      );
     });
   } finally {
     db.close();
@@ -426,6 +483,15 @@ function getDayName(dateValue: string) {
   const parsed = new Date(`${dateValue}T12:00:00`);
   if (Number.isNaN(parsed.getTime())) return "";
   return parsed.toLocaleDateString("en-US", { weekday: "long" });
+}
+
+function normalizeStatusValue(status?: unknown) {
+  const normalized = String(status || "")
+    .trim()
+    .toLowerCase();
+  if (["pending", "confirmed", "completed", "cancelled"].includes(normalized))
+    return normalized;
+  return "pending";
 }
 
 function pickWritableTable(db: Database.Database): TableInfo {
@@ -523,9 +589,21 @@ export function createAppointment(appointment: Appointment): Appointment {
         )
         .run(...fallback.insertValues);
       const id = result.lastInsertRowid as number;
+      saveSourceOverride(
+        db,
+        fallbackTable.name,
+        id,
+        appointment.source || "Website Form",
+      );
       logActivity(db, {
         type: "booking",
-        message: `New booking from ${appointment.customer_name || "a customer"}`,
+        message: `New ${
+          String(appointment.source || "")
+            .toLowerCase()
+            .includes("admin")
+            ? "admin"
+            : "website"
+        } booking from ${appointment.customer_name || "a customer"}`,
         appointment_id: id,
         customer_name: appointment.customer_name,
         status: appointment.status || "pending",
@@ -546,9 +624,21 @@ export function createAppointment(appointment: Appointment): Appointment {
       .run(...insertValues);
 
     const id = result.lastInsertRowid as number;
+    saveSourceOverride(
+      db,
+      table.name,
+      id,
+      appointment.source || "Website Form",
+    );
     logActivity(db, {
       type: "booking",
-      message: `New booking from ${appointment.customer_name || "a customer"}`,
+      message: `New ${
+        String(appointment.source || "")
+          .toLowerCase()
+          .includes("admin")
+          ? "admin"
+          : "website"
+      } booking from ${appointment.customer_name || "a customer"}`,
       appointment_id: id,
       customer_name: appointment.customer_name,
       status: appointment.status || "pending",
@@ -589,12 +679,20 @@ export function getAppointmentsByDate(date: string): Appointment[] {
       .all(date) as Record<string, unknown>[];
 
     const statusOverrides = getStatusOverrides(db, table.name);
+    const sourceOverrides = getSourceOverrides(db, table.name);
 
     return rows.map((row) => {
       const id = getRowId(row, table.columns);
-      const override =
+      const statusOverride =
         id !== undefined ? statusOverrides.get(String(id)) : undefined;
-      return normalizeAppointment(row, table.columns, override);
+      const sourceOverride =
+        id !== undefined ? sourceOverrides.get(String(id)) : undefined;
+      return normalizeAppointment(
+        row,
+        table.columns,
+        statusOverride,
+        sourceOverride,
+      );
     });
   } finally {
     db.close();
@@ -622,12 +720,20 @@ export function getAppointmentsByDateRange(
       .all(startDate, endDate) as Record<string, unknown>[];
 
     const statusOverrides = getStatusOverrides(db, table.name);
+    const sourceOverrides = getSourceOverrides(db, table.name);
 
     return rows.map((row) => {
       const id = getRowId(row, table.columns);
-      const override =
+      const statusOverride =
         id !== undefined ? statusOverrides.get(String(id)) : undefined;
-      return normalizeAppointment(row, table.columns, override);
+      const sourceOverride =
+        id !== undefined ? sourceOverrides.get(String(id)) : undefined;
+      return normalizeAppointment(
+        row,
+        table.columns,
+        statusOverride,
+        sourceOverride,
+      );
     });
   } finally {
     db.close();
@@ -654,8 +760,15 @@ export function getAppointmentById(id: number): Appointment | undefined {
     if (!row) return undefined;
 
     const statusOverrides = getStatusOverrides(db, table.name);
-    const override = statusOverrides.get(String(id));
-    return normalizeAppointment(row, table.columns, override);
+    const sourceOverrides = getSourceOverrides(db, table.name);
+    const statusOverride = statusOverrides.get(String(id));
+    const sourceOverride = sourceOverrides.get(String(id));
+    return normalizeAppointment(
+      row,
+      table.columns,
+      statusOverride,
+      sourceOverride,
+    );
   } finally {
     db.close();
   }
@@ -739,8 +852,41 @@ export function updateAppointment(
     const idColumn = findColumn(table.columns, FIELD_CANDIDATES.id);
     const whereColumn = idColumn ? quoteIdentifier(idColumn) : "rowid";
 
-    if (appointment.status !== undefined) {
-      return updateAppointmentStatus(id, String(appointment.status));
+    const existing = db
+      .prepare(
+        `SELECT rowid AS __rowid, * FROM ${quoteIdentifier(table.name)} WHERE ${whereColumn} = ?`,
+      )
+      .get(id) as Record<string, unknown> | undefined;
+
+    if (!existing) return false;
+
+    const cleanedAppointment = { ...appointment };
+    if (cleanedAppointment.status !== undefined) {
+      cleanedAppointment.status = normalizeStatusValue(
+        cleanedAppointment.status,
+      );
+    }
+    if (
+      cleanedAppointment.source !== undefined &&
+      !String(cleanedAppointment.source).trim()
+    ) {
+      delete cleanedAppointment.source;
+    }
+
+    for (const key of [
+      "customer_name",
+      "customer_phone",
+      "service",
+      "barber",
+      "date",
+      "time",
+    ] as const) {
+      if (
+        cleanedAppointment[key] !== undefined &&
+        !String(cleanedAppointment[key] || "").trim()
+      ) {
+        delete cleanedAppointment[key];
+      }
     }
 
     const fieldMap: Record<string, readonly string[]> = {
@@ -750,8 +896,10 @@ export function updateAppointment(
       service: FIELD_CANDIDATES.service,
       barber: FIELD_CANDIDATES.barber,
       date: FIELD_CANDIDATES.date,
+      day: FIELD_CANDIDATES.day,
       time: FIELD_CANDIDATES.time,
       notes: FIELD_CANDIDATES.notes,
+      status: FIELD_CANDIDATES.status,
       source: FIELD_CANDIDATES.source,
     };
 
@@ -759,7 +907,7 @@ export function updateAppointment(
     const values: unknown[] = [];
 
     for (const [key, candidates] of Object.entries(fieldMap)) {
-      const value = appointment[key as keyof Appointment];
+      const value = cleanedAppointment[key as keyof Appointment];
       const column = findColumn(table.columns, candidates);
       if (value !== undefined && column) {
         updates.push(`${quoteIdentifier(column)} = ?`);
@@ -774,27 +922,55 @@ export function updateAppointment(
     if (updatedColumn)
       updates.push(`${quoteIdentifier(updatedColumn)} = CURRENT_TIMESTAMP`);
 
-    if (updates.length === 0) return false;
+    const hasSourceOverride = cleanedAppointment.source !== undefined;
+    const hasStatusOverride = cleanedAppointment.status !== undefined;
 
-    values.push(id);
-    const result = db
-      .prepare(
-        `UPDATE ${quoteIdentifier(table.name)} SET ${updates.join(", ")} WHERE ${whereColumn} = ?`,
-      )
-      .run(...values);
+    if (updates.length === 0 && !hasSourceOverride && !hasStatusOverride)
+      return false;
 
-    if (result.changes > 0) {
+    let result: Database.RunResult = { changes: 0, lastInsertRowid: 0 };
+
+    if (updates.length > 0) {
+      values.push(id);
+      result = db
+        .prepare(
+          `UPDATE ${quoteIdentifier(table.name)} SET ${updates.join(", ")} WHERE ${whereColumn} = ?`,
+        )
+        .run(...values);
+    }
+
+    if (hasStatusOverride) {
+      ensureStatusTable(db);
+      db.prepare(
+        `
+        INSERT INTO appointment_statuses (source_table, source_id, status, updated_at)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(source_table, source_id)
+        DO UPDATE SET status = excluded.status, updated_at = CURRENT_TIMESTAMP
+      `,
+      ).run(
+        table.name,
+        String(id),
+        normalizeStatusValue(cleanedAppointment.status),
+      );
+    }
+
+    if (hasSourceOverride) {
+      saveSourceOverride(db, table.name, id, String(cleanedAppointment.source));
+    }
+
+    if (result.changes > 0 || hasSourceOverride || hasStatusOverride) {
       const appointmentName = appointment.customer_name || `Appointment #${id}`;
       logActivity(db, {
         type: "updated",
         message: `${appointmentName} was updated`,
         appointment_id: id,
         customer_name: appointment.customer_name || null,
-        status: appointment.status || null,
+        status: cleanedAppointment.status || null,
       });
     }
 
-    return result.changes > 0;
+    return result.changes > 0 || hasSourceOverride || hasStatusOverride;
   } finally {
     db.close();
   }
@@ -827,6 +1003,10 @@ export function deleteAppointment(id: number): boolean {
     db.prepare(
       "DELETE FROM appointment_statuses WHERE source_table = ? AND source_id = ?",
     ).run(table.name, String(id));
+    ensureSourceTable(db);
+    db.prepare(
+      "DELETE FROM appointment_sources WHERE source_table = ? AND source_id = ?",
+    ).run(table.name, String(id));
 
     if (result.changes > 0) {
       const name = existing
@@ -852,18 +1032,61 @@ export function deleteAppointment(id: number): boolean {
   }
 }
 
+export function hasConfirmedAppointmentConflict(
+  date: string,
+  time: string,
+  excludeId?: number,
+): boolean {
+  const targetDate = String(date || "").trim();
+  const targetTime = normalizeTimeForCompare(time);
+  if (!targetDate || !targetTime) return false;
+
+  return getAllAppointments().some((appointment) => {
+    if (excludeId !== undefined && appointment.id === excludeId) return false;
+    return (
+      String(appointment.date || "").trim() === targetDate &&
+      normalizeTimeForCompare(appointment.time) === targetTime &&
+      normalizeStatusValue(appointment.status) === "confirmed"
+    );
+  });
+}
+
+function normalizeTimeForCompare(value?: unknown) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+function getLocalDateKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function normalizeStatus(status: unknown) {
+  const value = String(status || "pending")
+    .trim()
+    .toLowerCase();
+  return value || "pending";
+}
+
 export function getAppointmentStats() {
-  const today = new Date().toISOString().split("T")[0];
   const appointments = getAllAppointments();
+  const today = getLocalDateKey();
+
+  const todaysAppointments = appointments.filter((appointment) => {
+    return appointment.date === today;
+  });
 
   return {
-    today: appointments.filter((appointment) => appointment.date === today)
-      .length,
+    today: todaysAppointments.length,
     pending: appointments.filter(
-      (appointment) => appointment.status === "pending",
+      (appointment) => normalizeStatus(appointment.status) === "pending",
     ).length,
     confirmed: appointments.filter(
-      (appointment) => appointment.status === "confirmed",
+      (appointment) => normalizeStatus(appointment.status) === "confirmed",
     ).length,
     total: appointments.length,
   };
@@ -911,7 +1134,17 @@ export function getRecentActivity(limit = 8): ActivityItem[] {
     .map((appointment) => ({
       id: appointment.id,
       type: "booking",
-      message: `New booking from ${appointment.customer_name || "a customer"}`,
+      message: `New ${
+        String(appointment.source || "")
+          .toLowerCase()
+          .includes("website")
+          ? "website"
+          : String(appointment.source || "")
+                .toLowerCase()
+                .includes("admin")
+            ? "admin"
+            : "AI"
+      } booking from ${appointment.customer_name || "a customer"}`,
       appointment_id: appointment.id ?? null,
       customer_name: appointment.customer_name,
       status: appointment.status || "pending",
@@ -926,27 +1159,56 @@ export function getRecentActivity(limit = 8): ActivityItem[] {
 }
 
 export function getAllCustomers(): Customer[] {
-  const appointments = getAllAppointments();
+  const completedAppointments = getAllAppointments()
+    .filter(
+      (appointment) => normalizeStatusValue(appointment.status) === "completed",
+    )
+    .sort((a, b) => {
+      const aVisit =
+        `${a.date || ""} ${normalizeTimeForCompare(a.time)}`.trim();
+      const bVisit =
+        `${b.date || ""} ${normalizeTimeForCompare(b.time)}`.trim();
+      return bVisit.localeCompare(aVisit);
+    });
+
   const customers = new Map<string, Customer>();
 
-  for (const appointment of appointments) {
+  for (const appointment of completedAppointments) {
     const phone = appointment.customer_phone || "No phone number";
     const existing = customers.get(phone);
+
+    if (existing) {
+      customers.set(phone, {
+        ...existing,
+        name: existing.name || appointment.customer_name || "Unknown caller",
+        email: existing.email || appointment.customer_email || null,
+        total_visits: (existing.total_visits || 0) + 1,
+        created_at: existing.created_at || appointment.created_at,
+      });
+      continue;
+    }
+
     customers.set(phone, {
-      id: existing?.id || appointment.id,
-      name: appointment.customer_name || existing?.name || "Unknown caller",
+      id: appointment.id,
+      name: appointment.customer_name || "Unknown caller",
       phone,
-      email: appointment.customer_email || existing?.email || null,
-      total_visits: (existing?.total_visits || 0) + 1,
-      last_visit:
-        appointment.date || appointment.created_at || existing?.last_visit,
-      created_at: existing?.created_at || appointment.created_at,
+      email: appointment.customer_email || null,
+      total_visits: 1,
+      last_visit: appointment.date || appointment.created_at || "",
+      last_visit_time: appointment.time || "",
+      preferred_service: appointment.service || "Appointment",
+      source: appointment.source || "AI Voice Assistant",
+      created_at: appointment.created_at,
     });
   }
 
-  return Array.from(customers.values()).sort((a, b) =>
-    String(b.last_visit || "").localeCompare(String(a.last_visit || "")),
-  );
+  return Array.from(customers.values()).sort((a, b) => {
+    const aVisit =
+      `${a.last_visit || ""} ${normalizeTimeForCompare(a.last_visit_time)}`.trim();
+    const bVisit =
+      `${b.last_visit || ""} ${normalizeTimeForCompare(b.last_visit_time)}`.trim();
+    return bVisit.localeCompare(aVisit);
+  });
 }
 
 export function getCustomerByPhone(phone: string): Customer | undefined {
@@ -970,6 +1232,10 @@ export function clearAllAppointments(): boolean {
     db.prepare(`DELETE FROM ${quoteIdentifier(table.name)}`).run();
     ensureStatusTable(db);
     db.prepare("DELETE FROM appointment_statuses WHERE source_table = ?").run(
+      table.name,
+    );
+    ensureSourceTable(db);
+    db.prepare("DELETE FROM appointment_sources WHERE source_table = ?").run(
       table.name,
     );
     return true;
