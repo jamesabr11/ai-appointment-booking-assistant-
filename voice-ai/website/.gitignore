@@ -1,0 +1,16 @@
+# Local app data and secrets
+appointments.db
+*.db-wal
+*.db-shm
+.env
+.env.local
+.env.*
+call_logs/
+
+# Build output and dependencies
+node_modules/
+.next/
+out/
+
+# OS/editor files
+.DS_Store
