@@ -7,8 +7,7 @@ const dbPath =
   path.join(
     process.cwd(),
     "..",
-    "..",
-    "speech-assistant-openai-realtime-api-python",
+    "voice-assistant",
     "call_logs",
     "appointments.db",
   );

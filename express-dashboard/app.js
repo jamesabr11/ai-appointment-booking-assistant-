@@ -87,7 +87,8 @@ db.serialize(() => {
             booking_date TEXT NOT NULL,
             booking_day TEXT NOT NULL,
             booking_time TEXT NOT NULL,
-            phone_number TEXT NOT NULL
+            phone_number TEXT NOT NULL,
+            created_at TEXT
         )
     `);
 
